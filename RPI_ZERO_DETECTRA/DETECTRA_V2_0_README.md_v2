@@ -1,0 +1,271 @@
+# DETECTRA Edge Device v2.0 - RPi Zero Firmware
+
+## Quick Start
+
+### 1. Configuration
+
+The device ID is stored in `RPI_CONFIG.json`:
+```json
+{
+  "device_id": "ED0-00001",
+  ...
+}
+```
+
+**Edit this file to set your device ID** (format: `EDy-XXXXX`)
+
+### 2. Run the Script
+
+```bash
+cd /home/pi/DETECTRA/RPI_ZERO_DETECTRA
+python3 scripts/detectra_edge_device_v2.py
+```
+
+### 3. Pairing with Gateway
+
+1. **On Gateway:** Open web interface `http://<gateway-ip>`
+2. **Add Device:** Enter device ID: `ED0-00001`
+3. **Click "Pair Device"**
+4. **On RPi:** Watch for:
+   - LED turns BLUE
+   - Buzzer beeps
+   - Console shows: "📡 PAIR REQUEST FROM: GW0-00001"
+   - Console shows: "✓ Pairing complete with GW0-00001"
+5. **Check:** File `lora_config/GW0-00001.json` is automatically created!
+
+### 4. Sequential Polling
+
+Once paired, the device responds to gateway polling:
+
+**Gateway sends:**
+- `POLL` → Device responds with battery, RSSI, SNR
+- `START_INFER` → Device starts detection cycle
+- (Device captures 5 positions, sends DATA messages)
+- `FINALIZE` → Device confirms completion
+- `SLEEP` → Device returns to IDLE state
+
+---
+
+## File Structure
+
+```
+RPI_ZERO_DETECTRA/
+├── RPI_CONFIG.json              ← Device identity (ED0-00001)
+├── lora_config/                 ← Auto-created gateway pairings
+│   ├── GW0-00001.json          ← Created when paired with GW0-00001
+│   └── GW0-00002.json          ← Created if paired with another gateway
+├── scripts/
+│   └── detectra_edge_device_v2.py  ← Main firmware
+└── README_v2.md                 ← This file
+```
+
+---
+
+## Configuration Files
+
+### RPI_CONFIG.json
+**Purpose:** Stores device identity and hardware settings
+**Created:** Manually (before first run)
+**Contains:**
+- Device ID (`ED0-00001`)
+- LoRa settings (frequency, SF, etc.)
+- Hardware pins (servo, I2C)
+- Detection settings
+
+### lora_config/GW0-00001.json
+**Purpose:** Stores pairing data with specific gateway
+**Created:** Automatically when PAIR command received
+**Contains:**
+```json
+{
+  "gateway_id": "GW0-00001",
+  "device_id": "ED0-00001",
+  "paired": true,
+  "paired_timestamp": "2025-01-15T10:30:00",
+  "shared_secret": "temp_secret_GW0-00001_ED0-00001",
+  "table_left": "",
+  "table_right": "",
+  "last_poll": "2025-01-15T10:45:00",
+  "total_polls": 12,
+  "successful_polls": 11,
+  "failed_polls": 1
+}
+```
+
+---
+
+## Device States
+
+```
+IDLE → (receive PAIR) → PAIRING → IDLE
+     → (receive POLL) → HEALTH_CHECK
+     → (receive START_INFER) → INFERRING
+     → (capture & detect) → DATA_SENDING (×5 positions)
+     → (receive FINALIZE) → FINALIZING
+     → (receive SLEEP) → IDLE
+```
+
+---
+
+## LED Color Meanings
+
+| Color | Meaning |
+|-------|---------|
+| 🟢 GREEN | Idle / Ready |
+| 🔵 BLUE | Pairing or Inferring |
+| 🔴 RED | Error |
+| ⚫ OFF | Shutdown |
+
+---
+
+## Testing Without Gateway
+
+You can test LoRa reception manually:
+
+```bash
+python3 -c "
+from scripts.detectra_edge_device_v2 import *
+
+config = ConfigManager()
+lora = LoRaController(port='/dev/serial0', baudrate=115200)
+lora.connect()
+lora.initialize_lora()
+lora.start_receiving()
+
+print('Listening for messages...')
+while True:
+    messages = lora.read_messages()
+    for msg in messages:
+        print(f'Received: {msg}')
+    time.sleep(0.1)
+"
+```
+
+---
+
+## Troubleshooting
+
+### Device ID Not Found
+**Error:** `RPI_CONFIG.json not found`
+**Solution:** Create the file or run from correct directory
+
+### LoRa Connection Failed
+**Error:** `✗ LoRa connection failed`
+**Solutions:**
+1. Check `/dev/serial0` exists: `ls -l /dev/serial0`
+2. Enable UART: `sudo raspi-config` → Interface → Serial
+3. Check wiring (TX/RX not swapped)
+
+### No PAIR Response
+**Problem:** Gateway sends PAIR but device doesn't respond
+**Solutions:**
+1. Check device ID matches exactly
+2. Verify LoRa frequency/SF match gateway
+3. Check LoRa range (move closer)
+4. Monitor serial: Check for "+EVT:RXP2P:" messages
+
+### GPIO/Servo Errors
+**Error:** `⚠ Servo disabled`
+**Solutions:**
+1. Run as root: `sudo python3 ...`
+2. Add user to gpio group: `sudo usermod -a -G gpio pi`
+
+---
+
+## Integration with Existing YOLOv9 Code
+
+To integrate your existing detection code from `yolov9_onnx_object_detection_4_Classes_v8_slow_servo_lora.py`:
+
+### Option 1: Import Existing Detector
+
+In `detectra_edge_device_v2.py`, uncomment and modify:
+
+```python
+# Import your existing detector class
+from yolov9_onnx_object_detection_4_Classes_v8_slow_servo_lora import YOLOv9CustomDetectorWithServoAndLoRa
+
+class DetectraEdgeDevice:
+    def __init__(self, config_manager):
+        ...
+        # Use existing detector
+        self.detector = YOLOv9CustomDetectorWithServoAndLoRa(
+            model_path=self.device_config['detection']['model_path'],
+            ...
+        )
+```
+
+### Option 2: Replace `run_inference_cycle()`
+
+Copy the detection logic from your v8 script into the `run_inference_cycle()` method.
+
+---
+
+## Multiple Gateway Support
+
+The device can pair with multiple gateways:
+
+**Scenario:** ED0-00001 paired with both GW0-00001 and GW0-00002
+
+**File structure:**
+```
+lora_config/
+├── GW0-00001.json   ← First gateway
+└── GW0-00002.json   ← Second gateway
+```
+
+**Behavior:**
+- Device responds to POLL from either gateway
+- Each gateway has independent statistics
+- Only one gateway can poll at a time (sequential)
+
+---
+
+## Systemd Service (Auto-start on Boot)
+
+Create `/etc/systemd/system/detectra.service`:
+
+```ini
+[Unit]
+Description=DETECTRA Edge Device v2.0
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/DETECTRA/RPI_ZERO_DETECTRA
+ExecStart=/usr/bin/python3 /home/pi/DETECTRA/RPI_ZERO_DETECTRA/scripts/detectra_edge_device_v2.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+```bash
+sudo systemctl enable detectra
+sudo systemctl start detectra
+sudo systemctl status detectra
+```
+
+View logs:
+```bash
+sudo journalctl -u detectra -f
+```
+
+---
+
+## Next Steps
+
+1. ✅ Configure `RPI_CONFIG.json` with your device ID
+2. ✅ Run the script
+3. ✅ Pair with gateway via web interface
+4. ✅ Verify `lora_config/GW0-xxxxx.json` is created
+5. ⏳ Test polling cycle
+6. ⏳ Integrate real YOLOv9 detection
+7. ⏳ Configure table mappings
+8. ⏳ Deploy to production
+
+---
+
+© 2025 DETECTRA System
